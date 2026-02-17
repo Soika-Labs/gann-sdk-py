@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gann-sdk"
+dynamic = ["version"]
+description = "Python SDK for the Global Agentic Neural Network (GANN)"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+authors = [
+  {email = "vishnu@soika.ai"},
+]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "requests>=2.31.0,<3",
+  "websocket-client>=1.8.0,<2",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries",
+]
+
+[project.optional-dependencies]
+quic = [
+  "aioquic>=0.9.25",
+  "cryptography>=42.0.0",
+]
+examples = [
+  "python-dotenv>=1.0.1",
+  "langchain>=0.3.0",
+  "langchain-openai>=0.2.0",
+  "openai>=1.50.0",
+]
+test = [
+  "pytest>=8.0.0",
+]
+dev = [
+  "build>=1.2.2",
+  "twine>=5.1.1",
+]
+
+[tool.setuptools]
+packages = ["gann_sdk"]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+gann_sdk = "."
+
+[tool.setuptools.dynamic]
+version = {attr = "gann_sdk.__version__"}

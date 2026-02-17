@@ -51,6 +51,8 @@ while iterating locally.
 
 ## Publishing to PyPI
 
+For a maintainer checklist (including TestPyPI flow), see `RELEASING.md`.
+
 1. Build the package:
 
     ```bash

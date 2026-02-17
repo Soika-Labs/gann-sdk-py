@@ -99,3 +99,155 @@ Then type prompts in the chat terminal, for example:
 - Ensure `GANN_API_KEY` starts with `gann_`.
 - Ensure `OPENAI_API_KEY` is valid and has image generation access.
 - If connection fails, verify `GANN_BASE_URL=https://api.gnna.io`.
+
+## Input / Output Schema
+
+### Image Generation Agent
+
+### INPUT Schema
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "prompt": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "request_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "type": {
+      "const": "image_generate_request",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "request_id",
+    "prompt"
+  ],
+  "type": "object"
+}
+```
+
+### OUTPUT
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "image_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "request_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "revised_prompt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "type": {
+      "const": "image_generate_response",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "request_id",
+    "image_url",
+    "revised_prompt",
+    "error"
+  ],
+  "type": "object"
+}
+```
+
+### General Chat Agent
+
+### INPUT Schema
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "message": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "request_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "type": {
+      "const": "chat_request",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "request_id",
+    "message"
+  ],
+  "type": "object"
+}
+```
+
+### OUTPUT
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "image_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reply": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "request_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "routed_to_image_agent": {
+      "type": "boolean"
+    },
+    "type": {
+      "const": "chat_response",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "request_id",
+    "reply",
+    "routed_to_image_agent",
+    "image_url",
+    "error"
+  ],
+  "type": "object"
+}
+```
