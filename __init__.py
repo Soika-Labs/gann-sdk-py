@@ -9,9 +9,6 @@ from .client import (
     SchemaValidationError,
 )
 
-GannAgentClient = GannClient
-GannProxyClient = GannClient
-
 from .quic import (
     QuicOffer,
     QuicAnswer,
