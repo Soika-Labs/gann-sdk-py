@@ -39,8 +39,6 @@ from .quic_session import (
 
 __all__ = [
     "GannClient",
-    "GannAgentClient",
-    "GannProxyClient",
     "LoadTracker",
     "AgentDetails",
     "AgentSearchResponse",
