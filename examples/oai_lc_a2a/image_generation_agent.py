@@ -135,9 +135,6 @@ class ImageGenerationAgentApp:
             if result and result.relay_transport:
                 with contextlib.suppress(Exception):
                     await result.relay_transport.close()
-            if channel:
-                with contextlib.suppress(Exception):
-                    channel.close()
 
     async def _generate_image(self, *, request_id: str, prompt: str) -> ImageResponse:
         try:

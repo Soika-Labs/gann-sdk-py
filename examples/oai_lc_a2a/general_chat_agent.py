@@ -49,6 +49,15 @@ class GeneralChatAgentApp:
                 )
                 return
             details = f" data={getattr(payload, 'data', None)}"
+        elif kind == "reject":
+            reason = getattr(payload, "reason", None)
+            if reason is None:
+                data = getattr(payload, "data", None)
+                if isinstance(data, dict):
+                    reason = data.get("reason")
+                elif isinstance(data, str):
+                    reason = data
+            details = f" reason={reason}" if reason else ""
         print(f"[general-agent] signaling event kind={kind} sender={sender} session={session_id}{details}")
 
     def _on_error(self, error: Exception) -> None:
