@@ -602,8 +602,28 @@ class EmailAutomationAgentApp:
         except Exception as exc:
             print(f"[email-agent] could not fetch commercial-agent schema: {exc}")
 
+    @staticmethod
+    def _should_retry_commercial(error: str | None) -> bool:
+        if not error:
+            return False
+        err = error.lower()
+        return any(
+            token in err
+            for token in (
+                "target agent is offline",
+                "offline",
+                "reject",
+                "no commercial agent available",
+            )
+        )
 
-    async def _fetch_pricing_from_commercial_agent(self, query: str) -> PricingResponse:
+
+    async def _fetch_pricing_from_commercial_agent(
+        self,
+        query: str,
+        *,
+        _allow_retry: bool = True,
+    ) -> PricingResponse:
         if not self.commercial_agent_id:
             await self._resolve_and_cache_commercial_agent()
         if not self.commercial_agent_id:
@@ -668,7 +688,19 @@ class EmailAutomationAgentApp:
                 return PricingResponse(request_id=request_id, answer=answer, error=error)
 
             except Exception as exc:
-                return PricingResponse(request_id=request_id, error=str(exc))
+                result_error = str(exc)
+                if _allow_retry and self._should_retry_commercial(result_error):
+                    print("[email-agent] commercial agent unavailable — refreshing discovery and retrying once")
+                    self.commercial_agent_id = None
+                    self.commercial_input_schema = None
+                    self.commercial_output_schema = None
+                    await self._resolve_and_cache_commercial_agent()
+                    if self.commercial_agent_id:
+                        return await self._fetch_pricing_from_commercial_agent(
+                            query,
+                            _allow_retry=False,
+                        )
+                return PricingResponse(request_id=request_id, error=result_error)
             finally:
                 if result and channel:
                     with contextlib.suppress(Exception):

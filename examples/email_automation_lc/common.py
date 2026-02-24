@@ -246,14 +246,10 @@ def fetch_latest_unread_after(gmail_service, history_id: str) -> list[EmailMessa
 
     collected_ids: set[str] = set()
 
-    try:
-        resp = gmail_service.users().history().list(
-            userId="me",
-            startHistoryId=start_id,
-        ).execute()
-    except Exception as exc:
-        print(f"[email-agent] history.list() failed (historyId={history_id}): {exc}")
-        return []
+    resp = gmail_service.users().history().list(
+        userId="me",
+        startHistoryId=start_id,
+    ).execute()
 
     for record in resp.get("history", []):
         for added in record.get("messagesAdded", []):
