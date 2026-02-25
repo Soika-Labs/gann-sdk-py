@@ -5,6 +5,9 @@ import asyncio
 import base64
 import json
 import os
+import time
+import ssl
+import socket
 from dataclasses import dataclass
 from email.mime.text import MIMEText
 from typing import Any, Optional
@@ -170,20 +173,43 @@ def build_gmail_service(credentials_path: str, token_path: str):
         "https://www.googleapis.com/auth/gmail.modify",
     ]
 
-    creds = None
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    # Some environments set HTTP(S)_PROXY which can route HTTPS traffic
+    # through an HTTP proxy and cause SSL handshake errors like
+    # "[SSL: WRONG_VERSION_NUMBER] wrong version number" when talking
+    # to Google's APIs. Temporarily clear proxy env vars while we
+    # perform OAuth and build the Gmail service, then restore them.
+    proxy_env_keys = [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    _saved_env: dict[str, str] = {}
+    try:
+        for k in proxy_env_keys:
+            if k in os.environ:
+                _saved_env[k] = os.environ.pop(k)
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(token_path, "w") as f:
-            f.write(creds.to_json())
+        creds = None
+        if os.path.exists(token_path):
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 
-    return build("gmail", "v1", credentials=creds, cache_discovery=False)
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+                creds = flow.run_local_server(port=0)
+            with open(token_path, "w") as f:
+                f.write(creds.to_json())
+
+        return build("gmail", "v1", credentials=creds, cache_discovery=False)
+    finally:
+        # Restore any proxy environment variables we removed
+        for k, v in _saved_env.items():
+            os.environ[k] = v
 
 
 def rebuild_gmail_service(credentials_path: str, token_path: str):
@@ -191,6 +217,7 @@ def rebuild_gmail_service(credentials_path: str, token_path: str):
     Force-rebuild the Gmail service with a brand-new HTTP connection pool.
     Call this after any SSL error to recover without restarting the process.
     """
+    # Reuse build_gmail_service which already handles proxy env cleanup.
     return build_gmail_service(credentials_path, token_path)
 
 
@@ -221,9 +248,25 @@ def fetch_email_by_id(gmail_service, msg_id: str) -> "EmailMessage | None":
     fast-reading may have already removed the UNREAD label, causing silent misses.
     Deduplication is handled by _processed/_queued sets in the agent.
     """
-    msg = gmail_service.users().messages().get(
-        userId="me", id=msg_id, format="full"
-    ).execute()
+    # Retry transient network/SSL errors when fetching a single message
+    import ssl
+    import socket
+
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            msg = gmail_service.users().messages().get(
+                userId="me", id=msg_id, format="full"
+            ).execute()
+            break
+        except Exception as exc:
+            is_transient = isinstance(exc, (ssl.SSLError, socket.timeout, OSError)) or "timed out" in str(exc).lower()
+            if not is_transient or attempt == max_attempts:
+                raise
+            backoff = 0.5 * (2 ** (attempt - 1))
+            print(f"[email-agent] transient error fetching message {msg_id} (attempt {attempt}/{max_attempts}): {exc}")
+            time.sleep(backoff)
+            continue
     label_ids = msg.get("labelIds", [])
     if "INBOX" not in label_ids:
         return None
@@ -258,10 +301,46 @@ def fetch_latest_unread_after(gmail_service, history_id: str) -> list[EmailMessa
 
     collected_ids: set[str] = set()
 
-    resp = gmail_service.users().history().list(
-        userId="me",
-        startHistoryId=start_id,
-    ).execute()
+    # The Gmail History API can return a 404 if the requested
+    # startHistoryId is no longer available (too old or expired).
+    # Detect that and return an empty list so callers can fall back
+    # to a full inbox scan instead of crashing.
+    # Retry transient network/SSL errors a few times with exponential backoff.
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            from googleapiclient.errors import HttpError
+            import traceback
+
+            resp = gmail_service.users().history().list(
+                userId="me",
+                startHistoryId=start_id,
+            ).execute()
+            break
+        except HttpError as he:
+            # he.resp.status is often the HTTP status code
+            status = getattr(he, "resp", None)
+            code = getattr(status, "status", None)
+            if code == 404:
+                # History start ID not found / expired. Signal caller so it can
+                # re-register a new watch baseline and fall back to a full scan.
+                raise HistoryIdExpired(f"startHistoryId {start_id} not found: {he}")
+            # Non-404 HttpError: log and decide whether to retry
+            print(f"[email-agent] Gmail history.list HttpError (attempt {attempt}/{max_attempts}): {he}\n{traceback.format_exc()}")
+            if attempt < max_attempts:
+                backoff = 0.5 * (2 ** (attempt - 1))
+                time.sleep(backoff)
+                continue
+            raise
+        except (ssl.SSLError, socket.timeout, OSError) as net_exc:
+            # Transient network/SSL errors: retry a few times
+            print(f"[email-agent] transient network error on history.list (attempt {attempt}/{max_attempts}): {net_exc}")
+            if attempt < max_attempts:
+                backoff = 0.5 * (2 ** (attempt - 1))
+                time.sleep(backoff)
+                continue
+            # If we've exhausted retries, re-raise to let caller handle rebuild logic
+            raise
 
     for record in resp.get("history", []):
         for added in record.get("messagesAdded", []):
@@ -285,11 +364,26 @@ def fetch_latest_unread_after(gmail_service, history_id: str) -> list[EmailMessa
 
 def fetch_unread_emails(gmail_service, max_results: int = 20) -> list[EmailMessage]:
     """Fallback: fetch all unread inbox emails (used on startup check)."""
-    result = gmail_service.users().messages().list(
-        userId="me",
-        labelIds=["INBOX", "UNREAD"],
-        maxResults=max_results,
-    ).execute()
+    # Retry transient errors when listing messages
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = gmail_service.users().messages().list(
+                userId="me",
+                labelIds=["INBOX", "UNREAD"],
+                maxResults=max_results,
+            ).execute()
+            break
+        except Exception as exc:
+            # Prefer identifying SSL/timeouts specifically
+            if isinstance(exc, (ssl.SSLError, socket.timeout, OSError)) or "timed out" in str(exc).lower():
+                print(f"[email-agent] transient error on messages.list (attempt {attempt}/{max_attempts}): {exc}")
+                if attempt < max_attempts:
+                    backoff = 0.5 * (2 ** (attempt - 1))
+                    time.sleep(backoff)
+                    continue
+            # For other exceptions, re-raise
+            raise
     emails: list[EmailMessage] = []
     for meta in result.get("messages", []):
         try:
@@ -299,6 +393,12 @@ def fetch_unread_emails(gmail_service, max_results: int = 20) -> list[EmailMessa
         except Exception:
             pass
     return emails
+
+
+# Export a named exception class for callers to catch when the historyId is expired.
+class HistoryIdExpired(Exception):
+    """Raised when the requested Gmail startHistoryId is expired or not found."""
+    pass
 
 
 def _extract_body(payload: dict) -> str:
