@@ -15,8 +15,13 @@ from .quic import (
     QuicRelayTransport,
     QuicOffer,
     connect_quic_relay_transport,
+    parse_ice_server_urls,
+    discover_public_ip_from_stun,
 )
 from .signaling import SignalingChannel, SignalingEvent
+
+
+DEFAULT_STUN_SERVERS = ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"]
 
 
 @dataclass(slots=True)
@@ -26,6 +31,7 @@ class QuicDirectFirstOptions:
     direct_port: int = 0
     relay_local_port: int = 0
     advertised_candidates: Optional[list[str]] = None
+    stun_servers: Optional[list[str]] = None
 
 
 @dataclass(slots=True)
@@ -47,6 +53,7 @@ def _offer_to_wire(offer: QuicOffer) -> dict[str, Any]:
         "fingerprint_sha256": offer.fingerprint_sha256,
         "alpn": offer.alpn,
         "server_name": offer.server_name,
+        "stun_servers": list(offer.stun_servers or []),
         "e2ee_pubkey_b64": offer.e2ee_pubkey_b64,
     }
 
@@ -63,8 +70,50 @@ def _offer_from_wire(value: Any) -> QuicOffer:
         fingerprint_sha256=str(value.get("fingerprint_sha256", "")),
         alpn=str(value.get("alpn") or "gann-quic-p2p/1"),
         server_name=str(value.get("server_name") or "gann-peer"),
+        stun_servers=[str(s) for s in (value.get("stun_servers") or []) if str(s).strip()] or None,
         e2ee_pubkey_b64=str(value["e2ee_pubkey_b64"]) if value.get("e2ee_pubkey_b64") else None,
     )
+
+
+def _normalize_candidates(candidates: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        candidate = str(raw or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        out.append(candidate)
+    return out
+
+
+def _parse_candidate_from_payload(payload: Any) -> Optional[str]:
+    if isinstance(payload, str):
+        value = payload.strip()
+        return value or None
+    if isinstance(payload, dict):
+        value = str(payload.get("candidate") or "").strip()
+        return value or None
+    return None
+
+
+def _is_candidate_event(event: SignalingEvent, *, session_id: uuid.UUID, sender: uuid.UUID) -> bool:
+    return (
+        event.session_id == str(session_id)
+        and event.sender == str(sender)
+        and event.payload.kind == "quic_candidate"
+    )
+
+
+async def _send_local_candidates(
+    channel: SignalingChannel,
+    *,
+    session_id: uuid.UUID,
+    peer_agent_id: uuid.UUID,
+    candidates: list[str],
+) -> None:
+    for candidate in _normalize_candidates(candidates):
+        channel.send_quic_candidate(str(session_id), str(peer_agent_id), {"candidate": candidate})
 
 
 def _relay_from_wire(value: Any) -> QuicRelayInfo:
@@ -135,6 +184,7 @@ async def initiate_quic_session_direct_first(
         server = QuicPeerServer(opts.direct_host, opts.direct_port)
         await server.start()
         offer = server.offer(opts.advertised_candidates)
+        offer.stun_servers = list(opts.stun_servers or DEFAULT_STUN_SERVERS)
         channel.send_quic_offer(str(peer_agent_id), _offer_to_wire(offer))
 
         async def _accept_direct() -> QuicPeerConnection:
@@ -153,6 +203,12 @@ async def initiate_quic_session_direct_first(
         try:
             peer_conn = await _accept_direct()
             session_id, _relay = await asyncio.wait_for(relay_task, timeout=2.0)
+            await _send_local_candidates(
+                channel,
+                session_id=session_id,
+                peer_agent_id=peer_agent_id,
+                candidates=offer.candidates,
+            )
             return QuicDirectFirstResult(
                 mode="direct",
                 session_id=session_id,
@@ -161,6 +217,13 @@ async def initiate_quic_session_direct_first(
             )
         except Exception:
             session_id, relay = await relay_task
+
+        await _send_local_candidates(
+            channel,
+            session_id=session_id,
+            peer_agent_id=peer_agent_id,
+            candidates=offer.candidates,
+        )
 
         transport = await connect_quic_relay_transport(relay, local_port=opts.relay_local_port)
         peer_ready = await transport.relay_bind(token, relay.session_id)
@@ -213,17 +276,44 @@ async def respond_quic_offer_direct_first(
     bridge = _AsyncSignalingBridge(channel)
     try:
         peer = QuicPeerClient(local_port=opts.relay_local_port)
-        try:
-            conn = await asyncio.wait_for(peer.connect(offer), timeout=opts.direct_timeout)
-            channel.send_quic_answer(str(session_id), str(peer_agent_id), {"accepted": True, "mode": "direct"})
-            return QuicDirectFirstResult(
-                mode="direct",
-                session_id=session_id,
-                peer_agent_id=peer_agent_id,
-                peer_connection=conn,
+        candidates = _normalize_candidates(list(offer.candidates))
+        deadline = asyncio.get_event_loop().time() + max(0.0, opts.direct_timeout)
+        while candidates and asyncio.get_event_loop().time() < deadline:
+            current_offer = QuicOffer(
+                candidates=list(candidates),
+                cert_der_b64=offer.cert_der_b64,
+                fingerprint_sha256=offer.fingerprint_sha256,
+                alpn=offer.alpn,
+                server_name=offer.server_name,
+                stun_servers=offer.stun_servers,
+                e2ee_pubkey_b64=offer.e2ee_pubkey_b64,
             )
-        except Exception:
-            pass
+            remaining = max(0.001, deadline - asyncio.get_event_loop().time())
+            try:
+                conn = await asyncio.wait_for(peer.connect(current_offer), timeout=remaining)
+                channel.send_quic_answer(str(session_id), str(peer_agent_id), {"accepted": True, "mode": "direct"})
+                return QuicDirectFirstResult(
+                    mode="direct",
+                    session_id=session_id,
+                    peer_agent_id=peer_agent_id,
+                    peer_connection=conn,
+                )
+            except Exception:
+                pass
+
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                ev = await bridge.wait_for(
+                    lambda e: _is_candidate_event(e, session_id=session_id, sender=peer_agent_id),
+                    timeout=min(0.5, remaining),
+                )
+            except Exception:
+                break
+            candidate = _parse_candidate_from_payload(ev.payload.data)
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
 
         ev = relay_event
         if ev is None or ev.payload.kind != "quic_relay" or ev.session_id != str(session_id):

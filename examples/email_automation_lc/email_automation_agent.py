@@ -651,7 +651,9 @@ class EmailAutomationAgentApp:
                     peer_id,
                     options=QuicDirectFirstOptions(
                         direct_timeout=3.0,
-                        direct_host="127.0.0.1",
+                        direct_host=self.config.quic_direct_host,
+                        advertised_candidates=self.config.quic_advertised_candidates or None,
+                        stun_servers=self.config.quic_stun_servers or None,
                     ),
                 )
                 self.session_modes[str(result.session_id)] = str(result.mode)

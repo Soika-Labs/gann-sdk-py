@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import ssl
+import socket
+import struct
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -83,6 +85,88 @@ def _b64decode(data_b64: str) -> bytes:
     return base64.b64decode((data_b64 or "").strip())
 
 
+def parse_ice_server_urls(ice_config: Any) -> list[str]:
+    if not isinstance(ice_config, dict):
+        return []
+    servers = ice_config.get("ice_servers") or ice_config.get("iceServers") or ice_config.get("servers") or []
+    urls: list[str] = []
+    if isinstance(servers, dict):
+        servers = [servers]
+    for server in servers:
+        if isinstance(server, str):
+            urls.append(server)
+            continue
+        if not isinstance(server, dict):
+            continue
+        raw_urls = server.get("urls") or server.get("url") or []
+        if isinstance(raw_urls, str):
+            raw_urls = [raw_urls]
+        if isinstance(raw_urls, list):
+            for item in raw_urls:
+                if isinstance(item, str) and item.strip():
+                    urls.append(item.strip())
+    return urls
+
+
+def _parse_stun_url(url: str) -> tuple[str, int] | None:
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("stun:"):
+        raw = raw[len("stun:") :]
+    if raw.startswith("stuns:"):
+        raw = raw[len("stuns:") :]
+    if not raw:
+        return None
+    if ":" in raw:
+        host, port_str = raw.rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 3478
+        return host, port
+    return raw, 3478
+
+
+def discover_public_ip_from_stun(stun_urls: list[str], timeout: float = 2.0) -> Optional[str]:
+    for url in stun_urls:
+        parsed = _parse_stun_url(url)
+        if not parsed:
+            continue
+        host, port = parsed
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(timeout)
+                transaction_id = os.urandom(12)
+                request = struct.pack("!HHI12s", 0x0001, 0, 0x2112A442, transaction_id)
+                sock.sendto(request, (host, port))
+                data, _ = sock.recvfrom(2048)
+        except Exception:
+            continue
+        if len(data) < 20:
+            continue
+        msg_type, msg_len, magic = struct.unpack("!HHI", data[:8])
+        if msg_type != 0x0101 or magic != 0x2112A442:
+            continue
+        offset = 20
+        while offset + 4 <= len(data):
+            attr_type, attr_len = struct.unpack("!HH", data[offset : offset + 4])
+            value = data[offset + 4 : offset + 4 + attr_len]
+            padded = (attr_len + 3) & ~3
+            offset += 4 + padded
+            if attr_type != 0x0020 or len(value) < 8:
+                continue
+            family = value[1]
+            if family != 0x01:
+                continue
+            x_port = struct.unpack("!H", value[2:4])[0]
+            _port = x_port ^ (0x2112A442 >> 16)
+            x_addr = struct.unpack("!I", value[4:8])[0]
+            addr = x_addr ^ 0x2112A442
+            return socket.inet_ntoa(struct.pack("!I", addr))
+    return None
+
+
 @dataclass(slots=True)
 class QuicOffer:
     candidates: list[str]
@@ -90,6 +174,7 @@ class QuicOffer:
     fingerprint_sha256: str
     alpn: str = DEFAULT_ALPN
     server_name: str = DEFAULT_SERVER_NAME
+    stun_servers: Optional[list[str]] = None
     e2ee_pubkey_b64: Optional[str] = None
 
 
@@ -349,6 +434,14 @@ class QuicPeerServer:
         return self._fingerprint_sha256
 
     @property
+
+    @property
+    def bound_host(self) -> Optional[str]:
+        return self._bound_host
+
+    @property
+    def bound_port(self) -> Optional[int]:
+        return self._bound_port
     def cert_der_b64(self) -> str:
         return _b64encode(self._cert_der)
 

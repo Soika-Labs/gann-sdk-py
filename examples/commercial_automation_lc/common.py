@@ -24,6 +24,9 @@ class AppConfig:
     baserow_api_token: str
     baserow_table_id: str        # "746411" — ASUS Laptops table
     chat_model: str
+    quic_direct_host: str
+    quic_stun_servers: list[str]
+    quic_advertised_candidates: list[str]
 
 
 
@@ -49,6 +52,11 @@ def _env(*names: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
+def _csv_env(name: str) -> list[str]:
+    raw = os.getenv(name, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def load_config() -> AppConfig:
     api_key = _env("GANN_API_KEY", "GANN-API-KEY")
     if not api_key:
@@ -72,6 +80,10 @@ def load_config() -> AppConfig:
         baserow_api_token=baserow_token,
         baserow_table_id=table_id,
         chat_model=_env("CHAT_MODEL", default="gpt-4o-mini") or "gpt-4o-mini",
+        quic_direct_host=_env("QUIC_DIRECT_HOST", default="0.0.0.0") or "0.0.0.0",
+        quic_stun_servers=_csv_env("QUIC_STUN_SERVERS")
+        or ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"],
+        quic_advertised_candidates=_csv_env("QUIC_ADVERTISED_CANDIDATES"),
     )
 
 

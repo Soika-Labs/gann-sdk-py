@@ -74,7 +74,10 @@ class CommercialAgentApp:
         result = None
         try:
             channel, result = await self.client.accept_quic_direct_first(
-                options=QuicDirectFirstOptions(direct_timeout=3.0),
+                options=QuicDirectFirstOptions(
+                    direct_timeout=3.0,
+                    direct_host=self.config.quic_direct_host,
+                ),
                 offer_timeout=300.0,
             )
             print(f"[commercial-agent] session accepted mode={result.mode} session={result.session_id}")

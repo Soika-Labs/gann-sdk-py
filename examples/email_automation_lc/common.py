@@ -31,6 +31,9 @@ class AppConfig:
     personal_contacts: dict
     my_email: str
     pubsub_topic: Optional[str]
+    quic_direct_host: str
+    quic_stun_servers: list[str]
+    quic_advertised_candidates: list[str]
 
 
 
@@ -79,6 +82,11 @@ def _env(*names: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
+def _csv_env(name: str) -> list[str]:
+    raw = os.getenv(name, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def load_config() -> AppConfig:
     api_key = _env("GANN_API_KEY", "GANN-API-KEY")
     if not api_key:
@@ -115,6 +123,10 @@ def load_config() -> AppConfig:
         personal_contacts=personal_contacts,
         my_email=my_email,
         pubsub_topic=_env("PUBSUB_TOPIC"),
+        quic_direct_host=_env("QUIC_DIRECT_HOST", default="0.0.0.0") or "0.0.0.0",
+        quic_stun_servers=_csv_env("QUIC_STUN_SERVERS")
+        or ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"],
+        quic_advertised_candidates=_csv_env("QUIC_ADVERTISED_CANDIDATES"),
     )
 
 
