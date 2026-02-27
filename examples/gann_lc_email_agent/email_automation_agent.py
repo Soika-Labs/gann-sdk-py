@@ -68,17 +68,11 @@ class EmailAutomationAgentApp:
         self._ssl_error_threshold = 5
         self._history_file = self.config.gmail_history_path
         self._last_history_id: str | None = None
-
-        # ── NEW: guard against concurrent dials to the same commercial peer ──
-        # If a dial is already in progress, callers wait on this event instead
-        # of stacking a second QUIC handshake on top of the first.
         self._dial_in_progress: bool = False
         self._dial_done_event: asyncio.Event = asyncio.Event()
         self._dial_done_event.set()   # starts in "ready" state
 
-    # ------------------------------------------------------------------
-    # historyId persistence
-    # ------------------------------------------------------------------
+  
 
     def _save_history_id(self, history_id: str) -> None:
         try:
@@ -902,12 +896,11 @@ class EmailAutomationAgentApp:
                     if not peer_id:
                         return PricingResponse(request_id=request_id, error="No commercial agent available after rediscovery")
 
-                # ── Attempt 1 ────────────────────────────────────────────────
                 try:
                     response = await self._dial_and_transfer(
                         peer_id,
                         request_payload,
-                        direct_timeout=5.0,   # increased: was 1.0 s — give commercial agent time to drain stale events
+                        direct_timeout=5.0,   
                         response_timeout=30.0,
                         attempt_label=" (attempt 1)",
                     )
@@ -925,9 +918,6 @@ class EmailAutomationAgentApp:
 
                 is_transient = self._is_transient_error(result_error)
 
-                # ── Attempt 2: immediate redial with longer timeout ──────────
-                # Wait 2 s first so stale signaling events on the commercial
-                # agent's side have time to expire / be consumed.
                 print(f"[email-agent] waiting 2 s before attempt 2 (let stale events drain)...")
                 await asyncio.sleep(2.0)
                 try:
@@ -947,7 +937,6 @@ class EmailAutomationAgentApp:
                     result_error = str(exc2)
                     print(f"[email-agent] attempt 2 failed: {result_error}\n{traceback.format_exc()}")
 
-                # ── Attempt 3: rediscover + longer wait + final dial ─────────
                 if is_transient or self._should_retry_commercial(result_error):
                     print("[email-agent] refreshing discovery — waiting 5 s before final attempt...")
                     self.commercial_agent_id = None
@@ -980,9 +969,6 @@ class EmailAutomationAgentApp:
                 self._dial_in_progress = False
                 self._dial_done_event.set()
 
-    # ------------------------------------------------------------------
-    # Helpers for _fetch_pricing_from_commercial_agent
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _is_transient_error(error_str: str) -> bool:

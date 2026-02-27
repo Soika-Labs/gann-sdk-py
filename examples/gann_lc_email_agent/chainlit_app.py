@@ -22,9 +22,7 @@ from common import (
 )
 from email_automation_agent import EmailAutomationAgentApp
 
-# ---------------------------------------------------------------------------
-# Global state – one shared app instance across all Chainlit sessions
-# ---------------------------------------------------------------------------
+
 
 _app: EmailAutomationAgentApp | None = None
 _background_task: asyncio.Task | None = None
@@ -37,9 +35,6 @@ def _get_app() -> EmailAutomationAgentApp:
     return _app
 
 
-# ---------------------------------------------------------------------------
-# Chainlit lifecycle hooks
-# ---------------------------------------------------------------------------
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -77,9 +72,6 @@ async def _start_background_agent(app: EmailAutomationAgentApp) -> None:
         print(f"[chainlit] Background agent crashed: {exc}\n{traceback.format_exc()}")
 
 
-# ---------------------------------------------------------------------------
-# Message handler
-# ---------------------------------------------------------------------------
 
 @cl.on_message
 async def on_message(message: cl.Message):
@@ -105,20 +97,14 @@ async def on_message(message: cl.Message):
     await thinking.update()
 
 
-# ---------------------------------------------------------------------------
-# Core chat logic
-# ---------------------------------------------------------------------------
-
 async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: list[dict]) -> str:
     intent = await _classify_user_intent(app.llm, user_text, history)
     action = intent.get("action", "chat")
     params = intent.get("params", {})
 
-    # ── pricing query → commercial agent via QUIC ─────────────────────────
     if action == "pricing_query":
         return await _handle_pricing_query(app, user_text, params)
 
-    # ── list / browse inbox ───────────────────────────────────────────────
     if action == "list_emails":
         emails = await asyncio.to_thread(fetch_all_inbox_emails, app.gmail, 20)
         if not emails:
@@ -131,7 +117,6 @@ async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: li
             "Number each entry.",
         )
 
-    # ── read / deep-summarise one email ───────────────────────────────────
     if action == "read_email":
         emails = await asyncio.to_thread(fetch_all_inbox_emails, app.gmail, 30)
         target = params.get("target", "").lower()
@@ -143,7 +128,6 @@ async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: li
             )
         return await _deep_read_email(app.llm, matched)
 
-    # ── send / reply ──────────────────────────────────────────────────────
     if action == "send_reply":
         to_addr = params.get("to", "").strip()
         subject = params.get("subject", "Re: your email")
@@ -175,7 +159,6 @@ async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: li
         await asyncio.to_thread(send_email, app.gmail, to_addr, subject, body)
         return f"✅ Email sent to **{to_addr}**."
 
-    # ── confirm / cancel pending ──────────────────────────────────────────
     if action == "confirm":
         pending = cl.user_session.get("pending_action")
         if pending and pending.get("action") == "send_reply":
@@ -189,7 +172,6 @@ async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: li
         cl.user_session.set("pending_action", None)
         return "❌ Action cancelled."
 
-    # ── forward ───────────────────────────────────────────────────────────
     if action == "forward_email":
         emails = await asyncio.to_thread(fetch_all_inbox_emails, app.gmail, 30)
         target = params.get("target", "").lower()
@@ -212,7 +194,6 @@ async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: li
         await asyncio.to_thread(forward_email, app.gmail, to_addr, matched, params.get("note", ""))
         return f"📤 Forwarded **'{matched.subject}'** to **{to_addr}**."
 
-    # ── mark as read ──────────────────────────────────────────────────────
     if action == "mark_read":
         emails = await asyncio.to_thread(fetch_all_inbox_emails, app.gmail, 30)
         matched = _find_email(emails, params.get("target", "").lower())
@@ -221,7 +202,6 @@ async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: li
         await asyncio.to_thread(mark_as_read, app.gmail, matched.msg_id)
         return f"✅ Marked **'{matched.subject}'** as read."
 
-    # ── search + analyse matching emails ─────────────────────────────────
     if action == "search_emails":
         emails = await asyncio.to_thread(fetch_all_inbox_emails, app.gmail, 30)
         keyword = params.get("keyword", "").lower()
@@ -249,7 +229,6 @@ async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: li
                 """,
         )
 
-    # ── catch-all: fetch emails and let the LLM answer using full content ─
     emails = await asyncio.to_thread(fetch_all_inbox_emails, app.gmail, 20)
     if emails:
         return await _ask_llm_about_emails(
@@ -262,9 +241,6 @@ async def _handle_chat(app: EmailAutomationAgentApp, user_text: str, history: li
     return await _general_chat_no_emails(app.llm, user_text, history)
 
 
-# ---------------------------------------------------------------------------
-# Commercial agent pricing handler (QUIC via shared app instance)
-# ---------------------------------------------------------------------------
 
 async def _handle_pricing_query(
     app: EmailAutomationAgentApp,
@@ -280,7 +256,6 @@ async def _handle_pricing_query(
     """
     query = params.get("query", user_text).strip()
 
-    # Guard: commercial agent is only wired up for ASUS products in this system.
     asus_keywords = ["asus", "expertbook", "zenbook", "vivobook", "rog", "tuf", "proart"]
     if not any(kw in query.lower() for kw in asus_keywords):
         return (
@@ -290,7 +265,6 @@ async def _handle_pricing_query(
             "- *Get me a quote for ASUS ZenBook 14*"
         )
 
-    # Ensure the commercial agent is resolved before we try to dial
     if not app.commercial_agent_id:
         try:
             await app._resolve_and_cache_commercial_agent()
@@ -327,7 +301,6 @@ async def _handle_pricing_query(
             "Try being more specific — e.g. include the exact model name."
         )
 
-    # Let the LLM format the raw pricing data into a friendly chat response
     result = await app.llm.ainvoke([
         SystemMessage(content=(
             "You are a helpful sales assistant in a chat interface. "
@@ -347,10 +320,6 @@ async def _handle_pricing_query(
     return f"💰 **Pricing Information**\n\n{str(content).strip()}"
 
 
-# ---------------------------------------------------------------------------
-# Utility: validate email addresses
-# ---------------------------------------------------------------------------
-
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -358,9 +327,6 @@ def _is_valid_email(addr: str) -> bool:
     return bool(addr and EMAIL_REGEX.match(addr.strip()))
 
 
-# ---------------------------------------------------------------------------
-# LLM helpers
-# ---------------------------------------------------------------------------
 
 async def _classify_user_intent(llm: ChatOpenAI, user_text: str, history: list[dict]) -> dict[str, Any]:
     """
@@ -516,10 +482,6 @@ async def _general_chat_no_emails(llm: ChatOpenAI, user_text: str, history: list
         content = " ".join(str(c) for c in content)
     return str(content).strip()
 
-
-# ---------------------------------------------------------------------------
-# Utility
-# ---------------------------------------------------------------------------
 
 def _find_email(emails: list[EmailMessage], target: str) -> EmailMessage | None:
     """Find the first email whose sender, address, or subject contains the target string."""

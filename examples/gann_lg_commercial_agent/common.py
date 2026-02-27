@@ -10,6 +10,7 @@ from uuid import UUID
 import requests
 from dotenv import load_dotenv
 from gann_sdk import AgentSchemaResponse, GannClient
+from langchain_core.tools import tool
 
 load_dotenv()
 
@@ -22,7 +23,7 @@ class AppConfig:
     commercial_agent_id: UUID
     baserow_url: str
     baserow_api_token: str
-    baserow_table_id: str        # "746411" — ASUS Laptops table
+    baserow_table_id: str        
     chat_model: str
 
 
@@ -30,7 +31,7 @@ class AppConfig:
 @dataclass(slots=True)
 class PricingRequest:
     request_id: str
-    query: str                   # e.g. "price for asus laptop"
+    query: str                   
 
 
 @dataclass(slots=True)
@@ -120,8 +121,8 @@ def fetch_baserow_rows(config: AppConfig, search: Optional[str] = None) -> list[
         resp.raise_for_status()
         data = resp.json()
         all_rows.extend(data.get("results", []))
-        url = data.get("next")      
-        params = {}                
+        url = data.get("next")
+        params = {}
 
     return all_rows
 
@@ -133,7 +134,28 @@ def format_rows_for_llm(rows: list[dict[str, Any]]) -> str:
 
     lines: list[str] = ["ASUS Laptops Inventory (Table ID 746411):"]
     for row in rows:
-        # Remove internal Baserow metadata fields
         display = {k: v for k, v in row.items() if not k.startswith("_") and k != "id"}
         lines.append("  - " + ", ".join(f"{k}: {v}" for k, v in display.items()))
     return "\n".join(lines)
+
+
+def make_baserow_tool(config: AppConfig):
+    """
+    Factory that returns a LangChain @tool for searching the Baserow
+    laptop inventory. We use a factory because the tool needs access to
+    `config` (credentials, URLs) which aren't known at import time.
+    """
+
+    @tool
+    def search_laptop_inventory(keyword: str) -> str:
+        """
+        Search the ASUS laptop inventory database for models matching the
+        given keyword (e.g. 'ZenBook 14 OLED', 'VivoBook 15', 'ASUS').
+        Returns pricing and spec details for all matching laptops.
+        Call this whenever you need to look up laptop prices or availability.
+        """
+        print(f"[tool] search_laptop_inventory called with keyword={keyword!r}")
+        rows = fetch_baserow_rows(config, search=keyword)
+        return format_rows_for_llm(rows)
+
+    return search_laptop_inventory
