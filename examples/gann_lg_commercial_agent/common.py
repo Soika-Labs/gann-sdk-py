@@ -138,14 +138,33 @@ def format_rows_for_llm(rows: list[dict[str, Any]]) -> str:
         lines.append("  - " + ", ".join(f"{k}: {v}" for k, v in display.items()))
     return "\n".join(lines)
 
+import re
+
+def extract_model_keyword(query: str) -> str:
+    """
+    Strip filler words and extract just the laptop model name for Baserow search.
+    e.g. 'retail price and remaining unit count for ASUS Laptop TUF Gaming F15'
+         -> 'TUF Gaming F15'
+    """
+    filler = re.compile(
+        r"(please\s+)?(provide|tell me|what is|what's|get me|give me|find|show)?"
+        r"\s*(the\s+)?(retail\s+price|commercial\s+price|price|cost|quote|specs?|specifications?"
+        r"|remaining\s+units?|unit\s+count|stock|availability|warranty|delivery)[^\w]*",
+        re.IGNORECASE,
+    )
+    cleaned = filler.sub(" ", query)
+
+    noise = re.compile(
+        r"\b(for|of|about|on|laptop|notebook|and|also|mention|remaining|unit|count|retail|commercial)\b",
+        re.IGNORECASE,
+    )
+    cleaned = noise.sub(" ", cleaned)
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    return cleaned if len(cleaned) >= 3 else query
 
 def make_baserow_tool(config: AppConfig):
-    """
-    Factory that returns a LangChain @tool for searching the Baserow
-    laptop inventory. We use a factory because the tool needs access to
-    `config` (credentials, URLs) which aren't known at import time.
-    """
-
     @tool
     def search_laptop_inventory(keyword: str) -> str:
         """
@@ -154,8 +173,9 @@ def make_baserow_tool(config: AppConfig):
         Returns pricing and spec details for all matching laptops.
         Call this whenever you need to look up laptop prices or availability.
         """
-        print(f"[tool] search_laptop_inventory called with keyword={keyword!r}")
-        rows = fetch_baserow_rows(config, search=keyword)
+        clean_keyword = extract_model_keyword(keyword)
+        print(f"[tool] search_laptop_inventory keyword={keyword!r} -> cleaned={clean_keyword!r}")
+        rows = fetch_baserow_rows(config, search=clean_keyword)
         return format_rows_for_llm(rows)
 
     return search_laptop_inventory

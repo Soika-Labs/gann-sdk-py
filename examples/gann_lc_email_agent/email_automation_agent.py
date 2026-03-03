@@ -490,8 +490,10 @@ class EmailAutomationAgentApp:
         print(f"[email-agent] pricing enquiry detected: {intent.query!r}")
 
         if "asus" in (intent.query or "").lower():
-            combined_query = f"{email.subject} — {intent.query}".strip(" —")
-            pricing = await self._fetch_pricing_from_commercial_agent(combined_query)
+            from common import extract_model_keyword   
+
+            clean_query = extract_model_keyword(intent.query)
+            pricing = await self._fetch_pricing_from_commercial_agent(clean_query)
 
             if pricing.error:
                 reply_body = (

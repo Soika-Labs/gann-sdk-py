@@ -510,3 +510,28 @@ def extract_sender_name(from_header: str) -> str:
     return clean.capitalize() if clean else "there"
 
 
+import re
+
+def extract_model_keyword(query: str) -> str:
+    """
+    Strip filler words and extract just the laptop model name for Baserow search.
+    e.g. 'retail price and remaining unit count for ASUS Laptop TUF Gaming F15'
+         -> 'TUF Gaming F15'
+    """
+    filler = re.compile(
+        r"(please\s+)?(provide|tell me|what is|what's|get me|give me|find|show)?"
+        r"\s*(the\s+)?(retail\s+price|commercial\s+price|price|cost|quote|specs?|specifications?"
+        r"|remaining\s+units?|unit\s+count|stock|availability|warranty|delivery)[^\w]*",
+        re.IGNORECASE,
+    )
+    cleaned = filler.sub(" ", query)
+
+    noise = re.compile(
+        r"\b(for|of|about|on|laptop|notebook|and|also|mention|remaining|unit|count|retail|commercial)\b",
+        re.IGNORECASE,
+    )
+    cleaned = noise.sub(" ", cleaned)
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    return cleaned if len(cleaned) >= 3 else query
