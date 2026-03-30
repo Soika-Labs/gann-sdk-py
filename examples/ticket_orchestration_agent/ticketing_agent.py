@@ -293,6 +293,7 @@ def build_ticketing_agent(config: AppConfig) -> Agent:
     )
     return agent
 
+
 class TicketingAgentApp:
     def __init__(self) -> None:
         self.config: AppConfig = load_config()
