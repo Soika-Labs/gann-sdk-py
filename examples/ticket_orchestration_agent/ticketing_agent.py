@@ -333,7 +333,7 @@ class TicketingAgentApp:
     def _on_error(self, error: Exception) -> None:
         print(f"[ticketing-agent] signaling/heartbeat error: {error}")
 
-   
+
     async def start(self) -> None:
         print("[ticketing-agent] connecting to GANN...")
         self.client.connect_agent(
@@ -346,6 +346,8 @@ class TicketingAgentApp:
 
         signaling_debug_task = asyncio.create_task(self._signaling_debug_loop())
 
+        consecutive_errors = 0  # ← track repeated failures
+
         try:
             while True:
                 print("[ticketing-agent] >>> top of accept loop")
@@ -354,12 +356,40 @@ class TicketingAgentApp:
                         options=QuicDirectFirstOptions(direct_timeout=1.0),
                         offer_timeout=300.0,
                     )
+                    consecutive_errors = 0  # reset on success
                     if channel and result:
                         asyncio.create_task(self._process_session(channel, result))
+
                 except asyncio.TimeoutError:
+                    consecutive_errors = 0
                     print("[ticketing-agent] no offer received before timeout; listening again")
+
+                except ConnectionError as exc:
+                    consecutive_errors += 1
+                    print(f"[ticketing-agent] ConnectionError (#{consecutive_errors}): {exc}")
+                    # Reconnect to GANN if repeated connection failures
+                    if consecutive_errors >= 3:
+                        print("[ticketing-agent] too many ConnectionErrors — reconnecting to GANN...")
+                        try:
+                            self.client.disconnect()
+                        except Exception:
+                            pass
+                        await asyncio.sleep(2.0)
+                        self.client.connect_agent(
+                            self.config.ticketing_agent_id,
+                            on_signal=self._on_signal,
+                            on_error=self._on_error,
+                        )
+                        consecutive_errors = 0
+                        print("[ticketing-agent] reconnected to GANN")
+                    else:
+                        await asyncio.sleep(0.5)
+
                 except Exception as exc:
+                    consecutive_errors += 1
                     print(f"[ticketing-agent] unexpected loop error (will retry): {exc}")
+                    await asyncio.sleep(1.0)
+
                 await asyncio.sleep(0.1)
                 print("[ticketing-agent] >>> bottom of accept loop")
         finally:
@@ -372,104 +402,10 @@ class TicketingAgentApp:
             f"[ticketing-agent] session accepted mode={result.mode} "
             f"session={result.session_id}"
         )
-
-        direct_writer = None
         try:
-            if result.mode == "relay" and result.relay_transport is not None and result.token:
-                frame = await result.relay_transport.recv_relay_data()
-                payload = decode_payload(frame.payload)
-            elif result.mode == "direct" and result.peer_connection is not None:
-                reader, writer = await result.peer_connection.accept_bi()
-                direct_writer = writer
-                raw = await reader.read()
-                payload = json.loads(raw.decode("utf-8")) if raw else {}
-            else:
-                print("[ticketing-agent] no usable QUIC transport")
-                return
-
-            self.client.validate_agent_input(
-                self.config.ticketing_agent_id,
-                payload,
-                label="ticketing-agent.inputs",
-            )
-            print(f"[ticketing-agent] received payload: {json.dumps(payload, indent=2)}")
-            if payload.get("type") not in ("ticket_request", "enterprise_enquiry_request"):
-
-                print(f"[ticketing-agent] unsupported payload type: {payload}")
-                return
-
-            request_id = str(payload.get("request_id", ""))
-            query = str(payload.get("query", "")).strip()
-
-            employee_id = payload.get("employee_id", "")
-            employee_name  = payload.get("employee_name", "")
-            department     = payload.get("department", "")
-            email          = payload.get("email", "")
-            issue_category = payload.get("issue_category", "")
-            description    = payload.get("description", "")
-
-            if all([employee_name, employee_id, department, email, issue_category, description]):
-                query = (
-                    f"[source=enterprise] Create a ticket immediately with these confirmed details:\n"
-                    f"Employee Name : {employee_name}\n"
-                    f"Employee ID   : {employee_id}\n"
-                    f"Department    : {department}\n"
-                    f"Email         : {email}\n"
-                    f"Issue Category: {issue_category}\n"
-                    f"Description   : {description}\n"
-                    "Do NOT ask for any additional information. Proceed directly to save_ticket_to_baserow."
-                )
-
-            if not request_id or not query:
-                ticket_resp = TicketResponse(
-                    request_id=request_id or "unknown",
-                    error="invalid payload: missing request_id or query",
-                )
-            else:
-                ticket_resp = await self._resolve_ticket(
-                    request_id=request_id, query=query
-                )
-            incoming_type = payload.get("type", "ticket_request")
-            print("INCOMING TYPE:", incoming_type)
-            response_type = (
-                "enterprise_enquiry_response"
-                if incoming_type == "enterprise_enquiry_request"
-                else "ticket_response"
-            )
-
-            response_payload = {
-                "type":       response_type,         
-                "request_id": ticket_resp.request_id,
-                "answer":     ticket_resp.answer or "",
-                "error":      ticket_resp.error or "",
-            }
-           
-            self.client.validate_agent_output(
-                self.config.ticketing_agent_id,
-                response_payload,
-                label="ticketing-agent.outputs",
-            )
-
-            if result.mode == "relay" and result.relay_transport is not None and result.token:
-                await result.relay_transport.relay_send(
-                    result.token,
-                    result.session_id,
-                    response_payload,
-                )
-            elif (
-                result.mode == "direct"
-                and result.peer_connection is not None
-                and direct_writer is not None
-            ):
-                direct_writer.write(
-                    json.dumps(response_payload, separators=(",", ":")).encode("utf-8")
-                )
-                await direct_writer.drain()
-                direct_writer.write_eof()
-                await asyncio.sleep(0.05)
-
-            print(f"[ticketing-agent] response sent request_id={ticket_resp.request_id}")
-
+            await self._handle_session(channel, result)
+        except ConnectionError as exc:
+            print(f"[ticketing-agent] ConnectionError in session {result.session_id}: {exc}")
         except Exception as exc:
             print(f"[ticketing-agent] session error: {exc}")
         finally:
@@ -479,6 +415,97 @@ class TicketingAgentApp:
             if result and getattr(result, "relay_transport", None):
                 with contextlib.suppress(Exception):
                     await result.relay_transport.close()
+
+
+    async def _handle_session(self, channel: Any, result: Any) -> None:
+        """Actual session logic — separated so _process_session can catch all errors."""
+        direct_writer = None
+
+        if result.mode == "relay" and result.relay_transport is not None and result.token:
+            frame = await result.relay_transport.recv_relay_data()
+            payload = decode_payload(frame.payload)
+        elif result.mode == "direct" and result.peer_connection is not None:
+            reader, writer = await result.peer_connection.accept_bi()
+            direct_writer = writer
+            raw = await reader.read()
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        else:
+            print("[ticketing-agent] no usable QUIC transport")
+            return
+
+        print(f"[ticketing-agent] received payload: {json.dumps(payload, indent=2)}")
+
+        self.client.validate_agent_input(
+            self.config.ticketing_agent_id,
+            payload,
+            label="ticketing-agent.inputs",
+        )
+
+        ACCEPTED_TYPES = ("ticket_request", "enterprise_enquiry_request")
+        if payload.get("type") not in ACCEPTED_TYPES:
+            print(f"[ticketing-agent] unsupported payload type: {payload.get('type')!r}")
+            return
+
+        request_id = str(payload.get("request_id", ""))
+        query      = str(payload.get("query", "")).strip()
+
+        if not request_id or not query:
+            ticket_resp = TicketResponse(
+                request_id=request_id or "unknown",
+                error="invalid payload: missing request_id or query",
+            )
+        else:
+            ticket_resp = await self._resolve_ticket(
+                request_id=request_id, query=query
+            )
+
+        incoming_type = payload.get("type", "ticket_request")
+        response_type = (
+            "enterprise_enquiry_response"
+            if incoming_type == "enterprise_enquiry_request"
+            else "ticket_response"
+        )
+
+        response_payload = {
+            "type":       response_type,
+            "request_id": ticket_resp.request_id,
+            "answer":     ticket_resp.answer or "",
+            "error":      ticket_resp.error or "",
+        }
+
+        self.client.validate_agent_output(
+            self.config.ticketing_agent_id,
+            response_payload,
+            label="ticketing-agent.outputs",
+        )
+
+        if result.mode == "relay" and result.relay_transport is not None and result.token:
+            await result.relay_transport.relay_send(
+                result.token,
+                result.session_id,
+                response_payload,
+            )
+        elif (
+            result.mode == "direct"
+            and result.peer_connection is not None
+            and direct_writer is not None
+        ):
+            direct_writer.write(
+                json.dumps(response_payload, separators=(",", ":")).encode("utf-8")
+            )
+            await direct_writer.drain()
+            direct_writer.write_eof()
+            await asyncio.sleep(0.05)
+
+        print(f"[ticketing-agent] response sent request_id={ticket_resp.request_id}")
+
+        if result and channel:
+            with contextlib.suppress(Exception):
+                channel.disconnect_session(
+                    str(result.session_id),
+                    str(self.config.ticketing_agent_id),
+                    "request_completed",
+                )
 
 
     async def _resolve_ticket(
