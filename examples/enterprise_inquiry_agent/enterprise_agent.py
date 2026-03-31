@@ -361,7 +361,10 @@ class EnterpriseAgentApp:
             print(f"{label} dialling peer_id={peer_id} direct_timeout={direct_timeout}s")
             channel, result = await self.client.dial_quic_direct_first(
                 peer_id,
-                options=QuicDirectFirstOptions(direct_timeout=direct_timeout),
+                options=QuicDirectFirstOptions(
+                    direct_timeout=direct_timeout,
+                    direct_host="127.0.0.1",
+                ),
             )
             print(f"{label} connected mode={result.mode} session={result.session_id}")
 
