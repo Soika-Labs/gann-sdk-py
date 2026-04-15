@@ -276,6 +276,11 @@ class AsusInquiryAgentApp:
 
         print(f"[asus-inquiry-agent] received payload: {json.dumps(payload, indent=2)}")
 
+        # Unwrap the GANN protocol envelope {"event": "request", "payload": {...}}
+        if isinstance(payload, dict) and payload.get("event") == "request" and isinstance(payload.get("payload"), dict):
+            payload = payload["payload"]
+            print(f"[asus-inquiry-agent] unwrapped inner payload: {json.dumps(payload, indent=2)}")
+
         try:
             self.client.validate_agent_input(
                 self.config.asus_agent_id,
@@ -289,6 +294,7 @@ class AsusInquiryAgentApp:
             "university_enquiry_request",
             "enterprise_enquiry_request",
             "asus_inquiry_request",
+            "asus_enquiry_request",
             "laptop_inquiry_request",
         )
         if payload.get("type") not in ACCEPTED_TYPES:
@@ -313,6 +319,7 @@ class AsusInquiryAgentApp:
             "university_enquiry_request": "university_enquiry_response",
             "enterprise_enquiry_request": "enterprise_enquiry_response",
             "asus_inquiry_request":       "asus_inquiry_response",
+            "asus_enquiry_request":       "asus_enquiry_response",
             "laptop_inquiry_request":     "laptop_inquiry_response",
         }
         response_payload = {
@@ -345,7 +352,7 @@ class AsusInquiryAgentApp:
             and direct_writer is not None
         ):
             direct_writer.write(
-                json.dumps(response_payload, separators=(",", ":")).encode("utf-8")
+                json.dumps(response_payload, separators=(",", ":")).encode("utf-8") + b"\n"
             )
             await direct_writer.drain()
             direct_writer.write_eof()
@@ -357,7 +364,7 @@ class AsusInquiryAgentApp:
             with contextlib.suppress(Exception):
                 channel.disconnect_session(
                     str(result.session_id),
-                    str(self.config.asus_agent_id),
+                    str(result.peer_agent_id),
                     "request_completed",
                 )
 
