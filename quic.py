@@ -434,14 +434,14 @@ class QuicPeerServer:
         return self._fingerprint_sha256
 
     @property
-
-    @property
     def bound_host(self) -> Optional[str]:
         return self._bound_host
 
     @property
     def bound_port(self) -> Optional[int]:
         return self._bound_port
+
+    @property
     def cert_der_b64(self) -> str:
         return _b64encode(self._cert_der)
 
@@ -716,6 +716,7 @@ async def connect_quic_relay_transport(
     config = QuicConfiguration(is_client=True)
     config.verify_mode = ssl.CERT_NONE
     config.server_name = relay.server_name or "gann-quic"
+    config.alpn_protocols = [relay.alpn or "gann-quic/1"]
 
     cm = connect(
         host,
