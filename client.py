@@ -407,7 +407,7 @@ class GannClient:
 
         return source_agent
 
-    def disconnect(self) -> None:
+    def disconnect(self, reason: Optional[str] = None) -> None:
         """Disconnect from GANN server and stop heartbeats."""
         self._heartbeat_stop.set()
         
@@ -415,7 +415,7 @@ class GannClient:
             self._heartbeat_thread.join(timeout=5.0)
         
         if self._signaling_channel:
-            self._signaling_channel.close()
+            self._signaling_channel.close(1000, reason)
             self._signaling_channel = None
 
         with self._pending_signaling_events_lock:
