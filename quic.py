@@ -682,12 +682,30 @@ async def connect_quic_relay_transport(
     local_port: int = 0,
 ) -> QuicRelayTransport:
     import asyncio
+    import os
+    from urllib.parse import urlparse
 
     _require_quic()
     _require_crypto()
 
     host, port_str = relay.quic_addr.rsplit(":", 1)
     port = int(port_str)
+
+    # Workaround: some GANN relay deployments advertise the wildcard bind
+    # address (0.0.0.0 / :: / empty) instead of their public hostname. That
+    # would make us "connect" to ourselves and immediately fail. Substitute
+    # GANN_RELAY_HOST (preferred) or the host from GANN_BASE_URL.
+    if host.strip() in {"", "0.0.0.0", "::", "[::]"}:
+        override = (os.environ.get("GANN_RELAY_HOST") or "").strip()
+        if not override:
+            base_url = (os.environ.get("GANN_BASE_URL") or "https://api.gnna.io").strip()
+            parsed = urlparse(base_url if "://" in base_url else f"https://{base_url}")
+            override = parsed.hostname or "api.gnna.io"
+        print(
+            f"[gann-sdk] quic_addr advertised wildcard host {host!r}; "
+            f"substituting {override!r} (set GANN_RELAY_HOST to override)"
+        )
+        host = override
 
     queue: "asyncio.Queue[QuicRelayDataFrame]" = asyncio.Queue()
 
