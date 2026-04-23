@@ -745,7 +745,22 @@ async def connect_quic_relay_transport(
         local_port=local_port,
     )
     protocol = await cm.__aenter__()
-    await protocol.wait_connected()
+    # Bound the QUIC handshake so a silently unreachable relay (e.g. NLB
+    # UDP listener misrouted, asymmetric NAT) doesn't hang the agent forever.
+    # Tunable via GANN_RELAY_HANDSHAKE_TIMEOUT (default 10s).
+    try:
+        handshake_timeout = float(os.environ.get("GANN_RELAY_HANDSHAKE_TIMEOUT", "10"))
+    except ValueError:
+        handshake_timeout = 10.0
+    try:
+        await asyncio.wait_for(protocol.wait_connected(), timeout=handshake_timeout)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(Exception):
+            await cm.__aexit__(None, None, None)
+        raise ConnectionError(
+            f"QUIC relay handshake to {host}:{port} timed out after "
+            f"{handshake_timeout:.1f}s — relay unreachable or UDP path broken"
+        )
     _verify_fingerprint(protocol, relay.server_fingerprint_sha256)
 
     return QuicRelayTransport(protocol, cm, queue)
