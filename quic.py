@@ -682,12 +682,40 @@ async def connect_quic_relay_transport(
     local_port: int = 0,
 ) -> QuicRelayTransport:
     import asyncio
+    import os
+    from urllib.parse import urlparse
 
     _require_quic()
     _require_crypto()
 
     host, port_str = relay.quic_addr.rsplit(":", 1)
     port = int(port_str)
+
+    # Hard override: GANN_RELAY_HOST_OVERRIDE always wins, regardless of what
+    # the server advertises. Useful when the server is behind an NLB and the
+    # response path is asymmetric (NLB advertised IP ≠ backend source IP).
+    force_override = (os.environ.get("GANN_RELAY_HOST_OVERRIDE") or "").strip()
+    if force_override:
+        print(
+            f"[gann-sdk] GANN_RELAY_HOST_OVERRIDE set; replacing relay host "
+            f"{host!r} with {force_override!r}"
+        )
+        host = force_override
+    # Workaround: some GANN relay deployments advertise the wildcard bind
+    # address (0.0.0.0 / :: / empty) instead of their public hostname. That
+    # would make us "connect" to ourselves and immediately fail. Substitute
+    # GANN_RELAY_HOST (preferred) or the host from GANN_BASE_URL.
+    elif host.strip() in {"", "0.0.0.0", "::", "[::]"}:
+        override = (os.environ.get("GANN_RELAY_HOST") or "").strip()
+        if not override:
+            base_url = (os.environ.get("GANN_BASE_URL") or "https://api.gnna.io").strip()
+            parsed = urlparse(base_url if "://" in base_url else f"https://{base_url}")
+            override = parsed.hostname or "api.gnna.io"
+        print(
+            f"[gann-sdk] quic_addr advertised wildcard host {host!r}; "
+            f"substituting {override!r} (set GANN_RELAY_HOST to override)"
+        )
+        host = override
 
     queue: "asyncio.Queue[QuicRelayDataFrame]" = asyncio.Queue()
 
@@ -727,7 +755,22 @@ async def connect_quic_relay_transport(
         local_port=local_port,
     )
     protocol = await cm.__aenter__()
-    await protocol.wait_connected()
+    # Bound the QUIC handshake so a silently unreachable relay (e.g. NLB
+    # UDP listener misrouted, asymmetric NAT) doesn't hang the agent forever.
+    # Tunable via GANN_RELAY_HANDSHAKE_TIMEOUT (default 10s).
+    try:
+        handshake_timeout = float(os.environ.get("GANN_RELAY_HANDSHAKE_TIMEOUT", "10"))
+    except ValueError:
+        handshake_timeout = 10.0
+    try:
+        await asyncio.wait_for(protocol.wait_connected(), timeout=handshake_timeout)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(Exception):
+            await cm.__aexit__(None, None, None)
+        raise ConnectionError(
+            f"QUIC relay handshake to {host}:{port} timed out after "
+            f"{handshake_timeout:.1f}s — relay unreachable or UDP path broken"
+        )
     _verify_fingerprint(protocol, relay.server_fingerprint_sha256)
 
     return QuicRelayTransport(protocol, cm, queue)

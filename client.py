@@ -483,8 +483,24 @@ class GannClient:
         url = self._signaling_url(token)
         headers = self._agent_headers()
         header_list = [f"{key}: {value}" for key, value in headers.items()]
-        
-        socket = websocket.create_connection(url, timeout=timeout, header=header_list)
+
+        # Use certifi's CA bundle for TLS verification — Homebrew/pyenv Python on
+        # macOS often can't find the system trust store, causing
+        # SSLCertVerificationError on wss:// connections even though `requests`
+        # works fine (it bundles certifi). websocket-client uses
+        # ssl.create_default_context() by default, which on those Pythons returns
+        # an empty trust store.
+        sslopt: Optional[Dict[str, Any]] = None
+        if url.startswith("wss://"):
+            try:
+                import certifi  # type: ignore
+                sslopt = {"ca_certs": certifi.where()}
+            except ImportError:
+                sslopt = None
+
+        socket = websocket.create_connection(
+            url, timeout=timeout, header=header_list, sslopt=sslopt
+        )
         socket.settimeout(None)
         return SignalingChannel(str(self.agent_id), socket)
 
