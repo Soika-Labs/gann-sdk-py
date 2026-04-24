@@ -1,5 +1,21 @@
 # Releasing `gann-sdk` to PyPI
 
+## Automatic publishing (GitHub Actions)
+
+This repo includes an automatic publish workflow at
+`.github/workflows/publish-on-version-bump.yml`.
+
+How it works:
+
+- Triggers on pushes to `main` when `__init__.py` or `pyproject.toml` changes.
+- Reads `__version__` from `__init__.py`.
+- Publishes only if version changed vs previous commit.
+- Skips if that version already exists on PyPI.
+
+Required one-time setup:
+
+- Add repository secret `PYPI_API_TOKEN` with a valid PyPI API token.
+
 ## 1) Bump version
 
 Update `__version__` in `__init__.py`.
