@@ -691,11 +691,21 @@ async def connect_quic_relay_transport(
     host, port_str = relay.quic_addr.rsplit(":", 1)
     port = int(port_str)
 
+    # Hard override: GANN_RELAY_HOST_OVERRIDE always wins, regardless of what
+    # the server advertises. Useful when the server is behind an NLB and the
+    # response path is asymmetric (NLB advertised IP ≠ backend source IP).
+    force_override = (os.environ.get("GANN_RELAY_HOST_OVERRIDE") or "").strip()
+    if force_override:
+        print(
+            f"[gann-sdk] GANN_RELAY_HOST_OVERRIDE set; replacing relay host "
+            f"{host!r} with {force_override!r}"
+        )
+        host = force_override
     # Workaround: some GANN relay deployments advertise the wildcard bind
     # address (0.0.0.0 / :: / empty) instead of their public hostname. That
     # would make us "connect" to ourselves and immediately fail. Substitute
     # GANN_RELAY_HOST (preferred) or the host from GANN_BASE_URL.
-    if host.strip() in {"", "0.0.0.0", "::", "[::]"}:
+    elif host.strip() in {"", "0.0.0.0", "::", "[::]"}:
         override = (os.environ.get("GANN_RELAY_HOST") or "").strip()
         if not override:
             base_url = (os.environ.get("GANN_BASE_URL") or "https://api.gnna.io").strip()
