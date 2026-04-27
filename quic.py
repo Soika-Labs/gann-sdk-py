@@ -746,6 +746,16 @@ async def connect_quic_relay_transport(
     config.server_name = relay.server_name or "gann-quic"
     config.alpn_protocols = [relay.alpn or "gann-quic/1"]
 
+    # NOTE: aioquic 1.3.0 has a quirk where `wait_connected=False` followed by
+    # `await protocol.wait_connected()` never actually fires the Initial packet
+    # — the handshake just hangs.  Using `wait_connected=True` inside connect()
+    # works correctly, so we wrap the context-manager entry in a wait_for to
+    # bound the handshake duration.  Tunable via GANN_RELAY_HANDSHAKE_TIMEOUT
+    # (default 10s).
+    try:
+        handshake_timeout = float(os.environ.get("GANN_RELAY_HANDSHAKE_TIMEOUT", "10"))
+    except ValueError:
+        handshake_timeout = 10.0
     cm = connect(
         host,
         port,
@@ -754,16 +764,8 @@ async def connect_quic_relay_transport(
         wait_connected=True,
         local_port=local_port,
     )
-    protocol = await cm.__aenter__()
-    # Bound the QUIC handshake so a silently unreachable relay (e.g. NLB
-    # UDP listener misrouted, asymmetric NAT) doesn't hang the agent forever.
-    # Tunable via GANN_RELAY_HANDSHAKE_TIMEOUT (default 10s).
     try:
-        handshake_timeout = float(os.environ.get("GANN_RELAY_HANDSHAKE_TIMEOUT", "10"))
-    except ValueError:
-        handshake_timeout = 10.0
-    try:
-        await asyncio.wait_for(protocol.wait_connected(), timeout=handshake_timeout)
+        protocol = await asyncio.wait_for(cm.__aenter__(), timeout=handshake_timeout)
     except asyncio.TimeoutError:
         with contextlib.suppress(Exception):
             await cm.__aexit__(None, None, None)

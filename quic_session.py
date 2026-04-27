@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, Optional, Literal
 
 from .client import GannClient
+
+_DEBUG = os.environ.get("GANN_SDK_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
+def _dbg(msg: str) -> None:
+    if _DEBUG:
+        print(f"[gann-sdk] {msg}", flush=True)
 from .quic import (
     QuicPeerServer,
     QuicPeerClient,
@@ -274,10 +282,13 @@ async def respond_quic_offer_direct_first(
     offer = _offer_from_wire(offer_event.payload.data)
 
     bridge = _AsyncSignalingBridge(channel)
+    _dbg(f"responder: session={session_id} peer={peer_agent_id} direct_timeout={opts.direct_timeout}s candidates={list(offer.candidates)!r}")
     try:
         peer = QuicPeerClient(local_port=opts.relay_local_port)
         candidates = _normalize_candidates(list(offer.candidates))
         deadline = asyncio.get_event_loop().time() + max(0.0, opts.direct_timeout)
+        direct_attempts = 0
+        last_direct_err: Optional[BaseException] = None
         while candidates and asyncio.get_event_loop().time() < deadline:
             current_offer = QuicOffer(
                 candidates=list(candidates),
@@ -289,8 +300,14 @@ async def respond_quic_offer_direct_first(
                 e2ee_pubkey_b64=offer.e2ee_pubkey_b64,
             )
             remaining = max(0.001, deadline - asyncio.get_event_loop().time())
+            direct_attempts += 1
+            _dbg(f"responder: direct attempt #{direct_attempts} candidates={candidates!r} remaining={remaining:.2f}s")
+            connect_task = asyncio.create_task(peer.connect(current_offer))
             try:
-                conn = await asyncio.wait_for(peer.connect(current_offer), timeout=remaining)
+                # shield so wait_for's cancellation does NOT propagate into the task;
+                # we cancel & detach manually below so a hanging cleanup cannot block us.
+                conn = await asyncio.wait_for(asyncio.shield(connect_task), timeout=remaining)
+                _dbg(f"responder: direct connect SUCCESS session={session_id}")
                 channel.send_quic_answer(str(session_id), str(peer_agent_id), {"accepted": True, "mode": "direct"})
                 return QuicDirectFirstResult(
                     mode="direct",
@@ -298,8 +315,16 @@ async def respond_quic_offer_direct_first(
                     peer_agent_id=peer_agent_id,
                     peer_connection=conn,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                last_direct_err = exc
+                _dbg(f"responder: direct attempt #{direct_attempts} failed: {type(exc).__name__}: {exc}")
+                if not connect_task.done():
+                    connect_task.cancel()
+                    def _drain(t: "asyncio.Task[Any]") -> None:
+                        with contextlib.suppress(BaseException):
+                            t.exception()
+                    connect_task.add_done_callback(_drain)
+                    _dbg(f"responder: direct attempt #{direct_attempts} task detached after timeout")
 
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
@@ -314,24 +339,51 @@ async def respond_quic_offer_direct_first(
             candidate = _parse_candidate_from_payload(ev.payload.data)
             if candidate and candidate not in candidates:
                 candidates.append(candidate)
+                _dbg(f"responder: added candidate {candidate}")
+
+        _dbg(f"responder: direct phase done attempts={direct_attempts} last_err={last_direct_err!r}; falling back to relay")
 
         ev = relay_event
         if ev is None or ev.payload.kind != "quic_relay" or ev.session_id != str(session_id):
-            ev = await bridge.wait_for(
-                lambda e: e.session_id == str(session_id)
-                and e.payload.kind == "quic_relay",
-                timeout=max(10.0, opts.direct_timeout * 5.0),
-            )
+            _dbg(f"responder: waiting for quic_relay event session={session_id} (timeout={max(10.0, opts.direct_timeout * 5.0):.1f}s)")
+            try:
+                ev = await bridge.wait_for(
+                    lambda e: e.session_id == str(session_id)
+                    and e.payload.kind == "quic_relay",
+                    timeout=max(10.0, opts.direct_timeout * 5.0),
+                )
+            except Exception as exc:
+                _dbg(f"responder: TIMEOUT waiting for quic_relay session={session_id}: {type(exc).__name__}: {exc}")
+                raise
         relay = _relay_from_wire(ev.payload.data)
+        _dbg(f"responder: got quic_relay session={session_id} addr={relay.quic_addr!r} relay_session={relay.session_id!r}")
 
-        transport = await connect_quic_relay_transport(relay, local_port=opts.relay_local_port)
-        peer_ready = await transport.relay_bind(token, relay.session_id)
+        try:
+            transport = await connect_quic_relay_transport(relay, local_port=opts.relay_local_port)
+            _dbg(f"responder: connect_quic_relay_transport OK -> dialing {relay.quic_addr}")
+        except Exception as exc:
+            _dbg(f"responder: connect_quic_relay_transport FAILED: {type(exc).__name__}: {exc}")
+            raise
+        try:
+            peer_ready = await transport.relay_bind(token, relay.session_id)
+            _dbg(f"responder: initial relay_bind peer_ready={peer_ready}")
+        except Exception as exc:
+            _dbg(f"responder: relay_bind RAISED: {type(exc).__name__}: {exc}")
+            raise
         if not peer_ready:
-            deadline = asyncio.get_event_loop().time() + max(2.0, opts.direct_timeout)
-            while not peer_ready and asyncio.get_event_loop().time() < deadline:
+            bind_deadline = asyncio.get_event_loop().time() + max(2.0, opts.direct_timeout)
+            poll = 0
+            while not peer_ready and asyncio.get_event_loop().time() < bind_deadline:
                 await asyncio.sleep(0.1)
-                peer_ready = await transport.relay_bind(token, relay.session_id)
+                poll += 1
+                try:
+                    peer_ready = await transport.relay_bind(token, relay.session_id)
+                except Exception as exc:
+                    _dbg(f"responder: relay_bind poll #{poll} RAISED: {type(exc).__name__}: {exc}")
+                    break
+            _dbg(f"responder: relay_bind polling done peer_ready={peer_ready} polls={poll}")
         channel.send_quic_answer(str(session_id), str(peer_agent_id), {"accepted": True, "mode": "relay"})
+        _dbg(f"responder: sent quic_answer session={session_id} mode=relay peer_ready={peer_ready}")
 
         return QuicDirectFirstResult(
             mode="relay",
