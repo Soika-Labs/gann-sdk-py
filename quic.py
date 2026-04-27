@@ -773,6 +773,21 @@ async def connect_quic_relay_transport(
             f"QUIC relay handshake to {host}:{port} timed out after "
             f"{handshake_timeout:.1f}s — relay unreachable or UDP path broken"
         )
-    _verify_fingerprint(protocol, relay.server_fingerprint_sha256)
+    # When the caller forcibly overrides the relay host (NLB / DNS rebind /
+    # custom edge), the server-advertised fingerprint corresponds to the
+    # backend the user is *bypassing*. Pinning would give a guaranteed
+    # mismatch on every connection (or worse, intermittent failures when the
+    # NLB round-robins to a different backend with a different cert), so we
+    # skip the pin in that case. Same applies when the caller explicitly
+    # sets GANN_RELAY_INSECURE_SKIP_FINGERPRINT=1.
+    skip_pin_env = (os.environ.get("GANN_RELAY_INSECURE_SKIP_FINGERPRINT") or "").strip().lower()
+    skip_pin = bool(force_override) or skip_pin_env in {"1", "true", "yes"}
+    if skip_pin:
+        print(
+            "[gann-sdk] skipping relay cert fingerprint pin "
+            f"(override={bool(force_override)}, env={skip_pin_env or 'unset'})"
+        )
+    else:
+        _verify_fingerprint(protocol, relay.server_fingerprint_sha256)
 
     return QuicRelayTransport(protocol, cm, queue)
