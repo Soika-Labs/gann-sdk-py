@@ -246,7 +246,11 @@ async def initiate_quic_session_direct_first(
             while not peer_ready and asyncio.get_event_loop().time() < deadline:
                 await asyncio.sleep(0.1)
                 peer_ready = await transport.relay_bind(token, relay.session_id)
-        channel.send_quic_answer(str(session_id), str(peer_agent_id), {"accepted": True, "mode": "relay"})
+        # NOTE: do NOT send quic_answer here. We are the initiator/offerer; the
+        # gann-server rejects quic_answer from the offerer with
+        # "unauthorized: only the responder can accept the signaling session",
+        # which tears the session down and the responder never gets to relay_bind.
+        # The responder side (respond_quic_offer_direct_first) sends the answer.
 
         return QuicDirectFirstResult(
             mode="relay",

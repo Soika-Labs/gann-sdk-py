@@ -719,24 +719,49 @@ async def connect_quic_relay_transport(
 
     queue: "asyncio.Queue[QuicRelayDataFrame]" = asyncio.Queue()
 
+    _relay_logger = __import__("logging").getLogger("gann.quic.relay")
+
     def stream_handler(reader, writer):
         _neutralize_stream_writer(writer)
 
         async def _read() -> None:
             raw = await reader.read()
+            _relay_logger.info(
+                "relay stream received: bytes=%d preview=%s",
+                len(raw or b""),
+                (raw[:120].decode("utf-8", errors="replace") if raw else ""),
+            )
             try:
                 data = json.loads(raw.decode("utf-8"))
-            except Exception:
+            except Exception as exc:
+                _relay_logger.warning(
+                    "relay stream JSON decode failed: bytes=%d err=%s",
+                    len(raw or b""),
+                    exc,
+                )
                 return
             if data.get("op") != "relay_data":
+                _relay_logger.info(
+                    "relay stream non-relay_data op=%s", data.get("op")
+                )
                 return
             try:
                 session_id = uuid.UUID(str(data.get("session_id")))
                 from_agent = uuid.UUID(str(data.get("from")))
                 to_agent = uuid.UUID(str(data.get("to")))
-            except Exception:
+            except Exception as exc:
+                _relay_logger.warning("relay frame uuid parse failed: %s", exc)
                 return
             payload = data.get("payload")
+            evt = ""
+            if isinstance(payload, dict):
+                evt = str(payload.get("event") or payload.get("type") or "")
+            _relay_logger.info(
+                "relay frame queued: session=%s event=%s payload_size=%d",
+                session_id,
+                evt or "<unknown>",
+                len(raw),
+            )
             await queue.put(QuicRelayDataFrame(session_id=session_id, from_agent=from_agent, to_agent=to_agent, payload=payload))
 
         asyncio.create_task(_read())
