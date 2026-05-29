@@ -1,0 +1,6 @@
+gann-sdk[quic]==0.2.5
+openai-agents
+openai>=1.50.0
+python-dotenv>=1.0.1
+requests>=2.31.0
+chainlit==2.9.6
