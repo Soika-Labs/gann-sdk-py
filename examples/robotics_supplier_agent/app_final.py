@@ -56,6 +56,18 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 load_dotenv()
 
+from chainlit.server import app as chainlit_app
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class HealthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/health":
+            return JSONResponse({"status": "ok"}, status_code=200)
+        return await call_next(request)
+
+chainlit_app.add_middleware(HealthMiddleware)
 
 RELAY_E2EE_ALG = "x25519-hkdf-sha256-chacha20poly1305"
 
