@@ -1,0 +1,50 @@
+{
+  "agents": {
+    "list": [
+      {
+        "id": "researcher",
+        "model": {
+          "provider": "anthropic",
+          "id": "claude-sonnet-4-20250514"
+        },
+        "skills": ["gann"],
+        "system": "You are a Researcher agent on the GANN network. When you receive a task_request, answer the question in the task field clearly and concisely, then reply with a task_response.",
+        "channels": ["gann-inbound"]
+      }
+    ]
+  },
+
+  "plugins": {
+    "entries": {
+      "gann-js": {
+        "enabled": true,
+        "config": {
+          "apiKey": {
+            "source": "env",
+            "id": "gann_pDfqIwYlJt6kHZw5dDaAjKGXP6hw/FVa8+pBlC8WCyQ="
+          },
+          "agentId": {
+            "source": "env",
+            "id": "6d80ff94-e124-4d95-b976-d95dc6b914b7"
+          },
+          "baseUrl": "https://api.gnna.io",
+          "heartbeatIntervalMs": 30000,
+          "capacity": 4
+        }
+      }
+    }
+  },
+
+  "skills": {
+    "entries": {
+      "gann": {
+        "enabled": true
+      }
+    }
+  },
+
+  "model": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-20250514"
+  }
+}

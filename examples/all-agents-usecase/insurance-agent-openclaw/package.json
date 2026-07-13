@@ -1,0 +1,19 @@
+{
+  "name": "agent-openclaw-researcher",
+  "version": "1.0.0",
+  "description": "OpenClaw Researcher agent — answers factual questions received via GANN",
+  "type": "module",
+  "scripts": {
+    "start": "openclaw gateway start",
+    "register": "node scripts/register.js"
+  },
+  "dependencies": {
+    "gann-sdk-quic-native": "^1.0.0",
+    "gann-sdk-quic-native-linux-x64-gnu": "^1.0.0",
+    "openclaw": "^2026.6.8",
+    "openclaw-gann-js-plugin": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
