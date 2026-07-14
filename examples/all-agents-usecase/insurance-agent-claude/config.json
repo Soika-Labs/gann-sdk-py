@@ -1,0 +1,6 @@
+{
+  "name": "insurance-claude-agent",
+  "version": "1.0.0",
+  "agent_id": "a79e96c6-591e-49a3-bf35-4e0658a01708",
+  "port": 8007
+}

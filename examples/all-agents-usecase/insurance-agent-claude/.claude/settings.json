@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "gann": {
+      "command": "claude-gann-mcp",
+      "env": {
+        "GANN_API_KEY": "gann_pDfqIwYlJt6kHZw5dDaAjKGXP6hw/FVa8+pBlC8WCyQ=",
+        "GANN_BASE_URL": "https://api.gnna.io",
+        "BASEROW_URL": "https://api.baserow.io",
+        "BASEROW_API_KEY": "ccgqwpAXghtRWLzPye8Ma1EicxkiC92l"
+      }
+    }
+  }
+}
